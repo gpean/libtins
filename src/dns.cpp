@@ -49,7 +49,21 @@ using std::make_pair;
 using Tins::Memory::InputMemoryStream;
 using Tins::Memory::OutputMemoryStream;
 
-namespace Tins {
+/////////////////////////////////////
+////////////////////////////////////
+
+std::string unpackData(std::string const& data);
+std::string packData(std::string const& data);
+
+/////////////////////////////////////
+////////////////////////////////////
+
+extern bool DEBUG;
+
+/////////////////////////////////////
+////////////////////////////////////
+
+namespace Tins {;
 
 PDU::metadata DNS::extract_metadata(const uint8_t* /*buffer*/, uint32_t total_sz) {
     if (TINS_UNLIKELY(total_sz < sizeof(dns_header))) {
@@ -171,7 +185,8 @@ bool DNS::contains_dname(uint16_t type) {
 }
 
 void DNS::add_query(const query& query) {
-    string new_str = encode_domain_name(query.dname());
+    uint32_t dname_name_id = name_counter_++;
+    string new_str = compress_domain_name(query.dname(), dname_name_id);
     size_t previous_length = new_str.size();
     // Epand the string to hold: Type (2 bytes) + Class (2 Bytes)
     new_str.insert(new_str.end(), sizeof(uint16_t) * 2, ' ');
@@ -192,6 +207,7 @@ void DNS::add_query(const query& query) {
         new_str.begin(),
         new_str.end()
     );
+    set_domain_name_offset(dname_name_id, threshold);
     header_.questions = Endian::host_to_be(static_cast<uint16_t>(questions_count() + 1));
 }
 
@@ -210,8 +226,10 @@ void DNS::add_record(const resource& resource, const sections_type& sections) {
     // will end up being inconsistent.
     IPv4Address v4_addr;
     IPv6Address v6_addr;
-    string buffer = encode_domain_name(resource.dname()), 
-           encoded_data;
+    uint32_t dname_name_id = name_counter_++;
+    uint32_t data_name_id = name_counter_++;
+    string buffer = compress_domain_name(resource.dname(), dname_name_id);
+    string encoded_data;
     // By default the data size is the length of the data field.
     size_t data_size = resource.data().size();
     if (resource.query_type() == A) {
@@ -223,7 +241,7 @@ void DNS::add_record(const resource& resource, const sections_type& sections) {
         data_size = IPv6Address::address_size;
     }
     else if (contains_dname(resource.query_type())) { 
-        encoded_data = encode_domain_name(resource.data());
+        encoded_data = compress_domain_name(resource.data(), data_name_id);
         data_size = encoded_data.size();
     }
     size_t offset = buffer.size() + sizeof(uint16_t) * 3 + sizeof(uint32_t) + data_size, 
@@ -246,6 +264,7 @@ void DNS::add_record(const resource& resource, const sections_type& sections) {
         offset,
         0
     );
+    set_domain_name_offset(dname_name_id, threshold);
     OutputMemoryStream stream(&records_data_[0] + threshold, offset);
     stream.write(buffer.begin(), buffer.end());
     stream.write_be(resource.query_type());
@@ -262,6 +281,7 @@ void DNS::add_record(const resource& resource, const sections_type& sections) {
         stream.write(v6_addr);
     }
     else if (!encoded_data.empty()) {
+        set_domain_name_offset(data_name_id, threshold + stream.written_size());
         stream.write(encoded_data.begin(), encoded_data.end());
     }
     else {
@@ -287,18 +307,132 @@ void DNS::add_additional(const resource& resource){
 
 string DNS::encode_domain_name(const string& dn) {
     string output;
+    auto push = [&](std::string const& label, uint16_t index) {
+        output.push_back(static_cast<char>(label.size()));
+        output.append(label);
+    };
     if (!dn.empty()) {
         size_t last_index(0), index;
-        while ((index = dn.find('.', last_index+1)) != string::npos) {
-            output.push_back(static_cast<char>(index - last_index));
-            output.append(dn.begin() + last_index, dn.begin() + index);
-            last_index = index + 1; //skip dot
+        while ((index = dn.find('.', last_index + 1)) != string::npos) {
+            push(std::string(dn.begin() + last_index, dn.begin() + index), last_index);
+            last_index = index + 1; // skip dot
         }
-        output.push_back(static_cast<char>(dn.size() - last_index));
-        output.append(dn.begin() + last_index, dn.end());
+        push(std::string(dn.begin() + last_index, dn.end()), last_index);
     }
     output.push_back('\0');
     return output;
+}
+
+static std::string& ltrim(std::string& str, const std::string& chars = "\t\n\v\f\r ") {
+    str.erase(0, str.find_first_not_of(chars));
+    return str;
+}
+ 
+static std::string& rtrim(std::string& str, const std::string& chars = "\t\n\v\f\r ") {
+    str.erase(str.find_last_not_of(chars) + 1);
+    return str;
+}
+ 
+static std::string& trim(std::string& str, const std::string& chars = "\t\n\v\f\r ") {
+    return ltrim(rtrim(str, chars), chars);
+}
+
+string DNS::compress_domain_name(string dn, uint32_t name_id) {
+    // Remove trailing dot
+    rtrim(dn, ".");
+
+    // Bail out early if empty
+    string output;
+    if (dn.empty()) {
+        output.push_back('\0');
+        return output;
+    }
+
+    // Split along '.'
+    std::vector<std::string> pieces;
+    size_t last_index(0), index;
+    while ((index = dn.find('.', last_index + 1)) != string::npos) {
+        pieces.push_back(std::string(dn.begin() + last_index, dn.begin() + index));
+        last_index = index + 1; // skip dot
+    }
+    pieces.push_back(std::string(dn.begin() + last_index, dn.end()));
+
+    // First pass. Attempt to replace remainder from cache. Otherwise keep appending
+    uint16_t label_offset = 0;
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        // Join pieces to form suffix
+        std::string suffix;
+        for (size_t j = i; j < pieces.size(); ++j) {
+            if (!suffix.empty()) { suffix += '.'; }
+            suffix += pieces[j];
+        }
+
+        auto it = name_cache_.find(suffix);
+        if (it != name_cache_.end()) {
+            // Suffix found in cache, no need to encode more
+            cache_entry_child child;
+            child.name_id = name_id;
+            child.label_offset = label_offset;
+            it->second.children.push_back(child);
+            if (DEBUG) { printf("POSITION OF LABEL \"%s\" SHOULD BE INSERTED AT [%u]+%u\n", suffix.c_str(), name_id, label_offset); }
+            output.push_back(static_cast<uint8_t>(name_id)); output.push_back(static_cast<uint8_t>(label_offset)); // Placeholder
+            if (DEBUG) { printf("RETURNING \"%s\" for [%u]\n", ::unpackData(output).c_str(), name_id); }
+            return output;
+        }
+        
+        // Add suffix to cache
+        cache_entry entry;
+        entry.name_id = name_id;
+        entry.label_offset = label_offset;
+        name_cache_[suffix] = entry;
+        if (DEBUG) { printf("LABEL \"%s\" IS AT [%u]+%u\n", suffix.c_str(), name_id, label_offset); }
+
+        // Encode label
+        auto& label = pieces[i];
+        if (DEBUG) { printf("APPENDING NON-COMPRESSED \"%s\" AT [%u]+%u\n", label.c_str(), name_id, label_offset); }
+        output.push_back(static_cast<uint8_t>(label.size()));
+        output.append(label);
+        label_offset += label.size() + 1;
+    }
+
+    // Put back the terminator (1:1 with the trailing dot)
+    output.push_back('\0');
+
+    if (DEBUG) { printf("RETURNING \"%s\" for [%u]\n", ::unpackData(output).c_str(), name_id); }
+
+    return output;
+}
+
+void DNS::set_domain_name_offset(uint32_t name_id, uint16_t offset) {
+    name_offsets_[name_id] = offset;
+    if (DEBUG) { printf("POSITION OF [%u] IS NOW %u\n", name_id, offset); }
+}
+
+void DNS::fix_domain_names(uint8_t* payload, uint32_t size) {
+    for (auto& pair : name_cache_) {
+        auto target_label_offset = name_offsets_[pair.second.name_id] + pair.second.label_offset;
+        auto encoded_target_label_offset = (target_label_offset + 0xc) | 0xc000;
+        for (auto& child : pair.second.children) {
+            auto modify_label_offset = name_offsets_[child.name_id] + child.label_offset;
+            if (DEBUG) {
+                printf("WRITING %u[%u]+%u=%u (%04x) AT %u[%u]+%u=%u (size %u)\n", 
+                    name_offsets_[pair.second.name_id], pair.second.name_id, pair.second.label_offset, target_label_offset, 
+                    encoded_target_label_offset,
+                    name_offsets_[child.name_id], child.name_id, child.label_offset, modify_label_offset,
+                    size);
+            }
+            if (modify_label_offset + 1 >= size) {
+                throw std::runtime_error("DNS Name Notation/Compression error (computed offset exceeding payload size)");
+            }
+            if (payload[modify_label_offset + 0] != static_cast<uint8_t>(child.name_id) 
+            || payload[modify_label_offset + 1] != static_cast<uint8_t>(child.label_offset)) {
+                throw std::runtime_error("DNS Name Notation/Compression error (placeholder fields mismatch)");
+            }
+            payload[modify_label_offset + 0] = static_cast<uint8_t>((encoded_target_label_offset >> 8) & 0xff);
+            payload[modify_label_offset + 1] = static_cast<uint8_t>((encoded_target_label_offset >> 0) & 0xff);
+        }
+        pair.second.children.clear();
+    }
 }
 
 string DNS::decode_domain_name(const string& domain_name) {
@@ -389,7 +523,9 @@ uint32_t DNS::compose_name(const uint8_t* ptr, char* out_ptr) const {
 void DNS::write_serialization(uint8_t* buffer, uint32_t total_sz, const PDU* /*parent*/) {
     OutputMemoryStream stream(buffer, total_sz);
     stream.write(header_);
+    auto records_start_ptr = stream.pointer();
     stream.write(records_data_.begin(), records_data_.end());
+    fix_domain_names(records_start_ptr, records_data_.size());
 }
 
 // Optimization. Creating an IPv4Address and then using IPv4Address::to_string

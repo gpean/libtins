@@ -36,6 +36,7 @@
 #include <cstring>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include "macros.h"
 #include "pdu.h"
 #include "endianness.h"
@@ -949,7 +950,7 @@ public:
      * \return The encoded domain name.
      */
     static std::string encode_domain_name(const std::string& domain_name);
-
+    
     /**
      * \brief Decodes a domain name
      *
@@ -1032,10 +1033,27 @@ private:
     static bool contains_dname(uint16_t type);
     void write_serialization(uint8_t* buffer, uint32_t total_sz, const PDU* parent);
     void add_record(const resource& resource, const sections_type& sections);
+
+    std::string compress_domain_name(std::string dn, uint32_t name_id);
+    void set_domain_name_offset(uint32_t name_id, uint16_t offset);
+    void fix_domain_names(uint8_t* payload, uint32_t size);
     
     dns_header header_;
     byte_array records_data_;
     uint32_t answers_idx_, authority_idx_, additional_idx_;
+
+    struct cache_entry_child {
+        uint32_t name_id;
+        uint16_t label_offset;
+    };
+    struct cache_entry {
+        uint32_t name_id;
+        uint16_t label_offset;
+        std::vector<cache_entry_child> children;
+    };
+    std::unordered_map<std::string, cache_entry> name_cache_;
+    std::map<uint32_t, uint16_t> name_offsets_;
+    uint32_t name_counter_ = 0;
 };
 
 } // Tins

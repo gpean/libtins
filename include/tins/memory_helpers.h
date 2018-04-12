@@ -173,11 +173,11 @@ private:
 class OutputMemoryStream {
 public:
     OutputMemoryStream(uint8_t* buffer, size_t total_sz)
-    : buffer_(buffer), size_(total_sz) {
+    : orig_buffer_(buffer), buffer_(buffer), size_(total_sz) {
     }
 
     OutputMemoryStream(std::vector<uint8_t>& buffer)
-    : buffer_(&buffer[0]), size_(buffer.size()) {
+    : orig_buffer_(&buffer[0]), buffer_(&buffer[0]), size_(buffer.size()) {
     }
 
     void skip(size_t size) {
@@ -249,7 +249,16 @@ public:
     size_t size() const {
         return size_;
     }
+
+    size_t written_size() const {
+        return static_cast<size_t>(buffer_ - orig_buffer_);
+    }
+
+    void write(const HWAddress<6>& address);
+    void write(const IPv4Address& address);
+    void write(const IPv6Address& address);
 private:
+    uint8_t* const orig_buffer_;
     uint8_t* buffer_;
     size_t size_;
 };
