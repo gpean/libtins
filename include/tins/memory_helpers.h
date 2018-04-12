@@ -253,10 +253,6 @@ public:
     size_t written_size() const {
         return static_cast<size_t>(buffer_ - orig_buffer_);
     }
-
-    void write(const HWAddress<6>& address);
-    void write(const IPv4Address& address);
-    void write(const IPv6Address& address);
 private:
     uint8_t* const orig_buffer_;
     uint8_t* buffer_;

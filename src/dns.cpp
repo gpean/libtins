@@ -63,7 +63,7 @@ extern bool DEBUG;
 /////////////////////////////////////
 ////////////////////////////////////
 
-namespace Tins {;
+namespace Tins {
 
 PDU::metadata DNS::extract_metadata(const uint8_t* /*buffer*/, uint32_t total_sz) {
     if (TINS_UNLIKELY(total_sz < sizeof(dns_header))) {
@@ -425,7 +425,7 @@ void DNS::fix_domain_names(uint8_t* payload, uint32_t size) {
                 throw std::runtime_error("DNS Name Notation/Compression error (computed offset exceeding payload size)");
             }
             if (payload[modify_label_offset + 0] != static_cast<uint8_t>(child.name_id) 
-            || payload[modify_label_offset + 1] != static_cast<uint8_t>(child.label_offset)) {
+             || payload[modify_label_offset + 1] != static_cast<uint8_t>(child.label_offset)) {
                 throw std::runtime_error("DNS Name Notation/Compression error (placeholder fields mismatch)");
             }
             payload[modify_label_offset + 0] = static_cast<uint8_t>((encoded_target_label_offset >> 8) & 0xff);
@@ -520,12 +520,32 @@ uint32_t DNS::compose_name(const uint8_t* ptr, char* out_ptr) const {
     return end_ptr - start_ptr;
 }
 
+void hexdump(uint8_t const* buf, int size) {
+  int i, j;
+  for (i = 0; i< size; i += 16) {
+    printf("%06x: ", i);
+    for (j = 0; j < 16; j++) 
+      if (i + j < size)
+        printf("%02x ", buf[i+j]);
+      else
+        printf("   ");
+    printf(" ");
+    for ( j= 0; j < 16; j++) 
+      if (i + j < size)
+        printf("%c", isprint(buf[i + j]) ? buf[i + j] : '.');
+    printf("\n");
+  }
+}
+
 void DNS::write_serialization(uint8_t* buffer, uint32_t total_sz, const PDU* /*parent*/) {
     OutputMemoryStream stream(buffer, total_sz);
     stream.write(header_);
+    auto hdrs = stream.written_size();
+    //hexdump(buffer, hdrs);
     auto records_start_ptr = stream.pointer();
     stream.write(records_data_.begin(), records_data_.end());
     fix_domain_names(records_start_ptr, records_data_.size());
+    //hexdump(buffer, hdrs);
 }
 
 // Optimization. Creating an IPv4Address and then using IPv4Address::to_string
