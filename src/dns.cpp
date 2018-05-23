@@ -375,7 +375,9 @@ string DNS::compress_domain_name(string dn, uint32_t name_id) {
             child.label_offset = label_offset;
             it->second.children.push_back(child);
             if (DEBUG) { printf("POSITION OF LABEL \"%s\" SHOULD BE INSERTED AT [%u]+%u\n", suffix.c_str(), name_id, label_offset); }
-            output.push_back(static_cast<uint8_t>(name_id)); output.push_back(static_cast<uint8_t>(label_offset)); // Placeholder
+            // Insert placeholder values
+            output.push_back(static_cast<uint8_t>(name_id));
+            output.push_back(static_cast<uint8_t>(label_offset));
             if (DEBUG) { printf("RETURNING \"%s\" for [%u]\n", ::unpackData(output).c_str(), name_id); }
             return output;
         }
@@ -424,10 +426,10 @@ void DNS::fix_domain_names(uint8_t* payload, uint32_t size) {
             if (modify_label_offset + 1 >= size) {
                 throw std::runtime_error("DNS Name Notation/Compression error (computed offset exceeding payload size)");
             }
-            if (payload[modify_label_offset + 0] != static_cast<uint8_t>(child.name_id) 
-             || payload[modify_label_offset + 1] != static_cast<uint8_t>(child.label_offset)) {
-                throw std::runtime_error("DNS Name Notation/Compression error (placeholder fields mismatch)");
-            }
+            // if (payload[modify_label_offset + 0] != static_cast<uint8_t>(child.name_id) 
+            //  || payload[modify_label_offset + 1] != static_cast<uint8_t>(child.label_offset)) {
+            //     throw std::runtime_error("DNS Name Notation/Compression error (placeholder fields mismatch)");
+            // }
             payload[modify_label_offset + 0] = static_cast<uint8_t>((encoded_target_label_offset >> 8) & 0xff);
             payload[modify_label_offset + 1] = static_cast<uint8_t>((encoded_target_label_offset >> 0) & 0xff);
         }
